@@ -542,6 +542,7 @@ where
 
                     OpProof::Ed25519Sig(ed25519_sig)
                 }
+                Op::ChannelDeposit(_deposit_op) => OpProof::NoProof,
                 Op::SDPDeclare(declare_op) => {
                     // For a new declaration, the note is still in the UTXOs (not yet locked).
                     // We look it up from the UTXO set to get the public key for signing.
