@@ -165,7 +165,7 @@ impl LedgerState {
         tx_hash: TxHash,
         ops: impl Iterator<Item = (&'a Op, Option<&'a OpProof>)> + 'a,
     ) -> Result<(Self, Balance), Error> {
-        let mut balance = 0;
+        let mut balance: Balance = 0;
         for (op, proof) in ops {
             match (op, proof) {
                 // The signature for channel ops can be verified before reaching this point,
@@ -180,6 +180,11 @@ impl LedgerState {
                 (Op::ChannelSetKeys(op), Some(OpProof::Ed25519Sig(sig))) => {
                     self.channels = self.channels.set_keys(op.channel, op, sig, &tx_hash)
                         .inspect_err(|err| error!(target: LOG_TARGET, %err, "failed to apply channel set-keys message"))?;
+                }
+                (Op::ChannelDeposit(op), Some(OpProof::NoProof)) => {
+                    self.channels = self.channels.deposit(op)
+                        .inspect_err(|err| error!(target: LOG_TARGET, %err, "Failed to apply the Channel Deposit message."))?;
+                    balance -= Balance::from(op.amount);
                 }
                 (
                     Op::SDPDeclare(op),
