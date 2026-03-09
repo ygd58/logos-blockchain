@@ -3827,6 +3827,7 @@ dependencies = [
  "logos-blockchain-chain-leader-service",
  "logos-blockchain-chain-service",
  "logos-blockchain-core",
+ "logos-blockchain-ledger",
  "logos-blockchain-network-service",
  "logos-blockchain-sdp-service",
  "logos-blockchain-storage-service",
