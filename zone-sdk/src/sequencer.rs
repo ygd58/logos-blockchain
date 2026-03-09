@@ -177,37 +177,16 @@ impl ZoneSequencer {
     /// Returns the inscription ID and a checkpoint for persistence.
     pub async fn publish(&self, data: Vec<u8>) -> Result<PublishResult, Error> {
         let (reply_tx, reply_rx) = oneshot::channel();
-        let request = ActorRequest::Publish {
-            data,
-            reply: reply_tx,
-        };
-
-        self.request_tx
-            .send(request)
-            .await
-            .map_err(|_| Error::Unavailable {
-                reason: "actor channel closed",
-            })?;
-
-        let (signed_tx, result) = reply_rx.await.map_err(|_| Error::Unavailable {
-            reason: "actor dropped reply",
-        })??;
-
-        info!("Created inscription {:?}", result.inscription_id);
-
-        // Post to network (best effort, will be resubmitted if needed)
-        if let Err(e) = self
-            .http_client
-            .post_transaction(self.node_url.clone(), signed_tx)
-            .await
-        {
-            warn!("Failed to post transaction: {e}");
-        }
-
-        Ok(result)
+        self.initiate_request_and_post_transaction(
+            ActorRequest::Publish {
+                data,
+                reply: reply_tx,
+            },
+            reply_rx,
+        )
+        .await
     }
 
-    // TODO: refactor to remove duplication with `publish`
     pub async fn deposit(
         &self,
         inscription_data: Vec<u8>,
@@ -225,39 +204,19 @@ impl ZoneSequencer {
             .ok_or(Error::NoteNotFound(input_note_id))?;
 
         let (reply_tx, reply_rx) = oneshot::channel();
-        let request = ActorRequest::Deposit {
-            inscription_data,
-            deposit_amount,
-            deposit_metadata,
-            input_note_key,
-            input_note_id,
-            input_note_value,
-            reply: reply_tx,
-        };
-
-        self.request_tx
-            .send(request)
-            .await
-            .map_err(|_| Error::Unavailable {
-                reason: "actor channel closed",
-            })?;
-
-        let (signed_tx, result) = reply_rx.await.map_err(|_| Error::Unavailable {
-            reason: "actor dropped reply",
-        })??;
-
-        info!("Created tx with inscription_id:{:?}", result.inscription_id);
-
-        // Post to network (best effort, will be resubmitted if needed)
-        if let Err(e) = self
-            .http_client
-            .post_transaction(self.node_url.clone(), signed_tx)
-            .await
-        {
-            warn!("Failed to post transaction: {e}");
-        }
-
-        Ok(result)
+        self.initiate_request_and_post_transaction(
+            ActorRequest::Deposit {
+                inscription_data,
+                deposit_amount,
+                deposit_metadata,
+                input_note_key,
+                input_note_id,
+                input_note_value,
+                reply: reply_tx,
+            },
+            reply_rx,
+        )
+        .await
     }
 
     pub async fn withdraw(
@@ -267,13 +226,23 @@ impl ZoneSequencer {
         output_note_pk: ZkPublicKey,
     ) -> Result<PublishResult, Error> {
         let (reply_tx, reply_rx) = oneshot::channel();
-        let request = ActorRequest::Withdraw {
-            inscription_data,
-            amount,
-            output_note_pk,
-            reply: reply_tx,
-        };
+        self.initiate_request_and_post_transaction(
+            ActorRequest::Withdraw {
+                inscription_data,
+                amount,
+                output_note_pk,
+                reply: reply_tx,
+            },
+            reply_rx,
+        )
+        .await
+    }
 
+    async fn initiate_request_and_post_transaction(
+        &self,
+        request: ActorRequest,
+        reply_rx: oneshot::Receiver<Result<(SignedMantleTx, PublishResult), Error>>,
+    ) -> Result<PublishResult, Error> {
         self.request_tx
             .send(request)
             .await
@@ -285,7 +254,7 @@ impl ZoneSequencer {
             reason: "actor dropped reply",
         })??;
 
-        info!("Created tx with inscription_id:{:?}", result.inscription_id);
+        info!("Created inscription: id={:?}", result.inscription_id);
 
         // Post to network (best effort, will be resubmitted if needed)
         if let Err(e) = self
