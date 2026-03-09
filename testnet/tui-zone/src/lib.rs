@@ -204,6 +204,10 @@ pub async fn run(args: InscribeArgs) {
                     let tx_hash: [u8; 32] = result.inscription_id.into();
                     println!("  published with deposit: {}", hex::encode(tx_hash));
                     save_checkpoint(checkpoint_path, &result.checkpoint);
+
+                    let new_balance = accounts.mint(recipient_address, amount);
+                    println!("  minted {amount} tokens for recipient {recipient_address}");
+                    println!("  zone account balance: {new_balance}");
                 }
                 Err(e) => {
                     println!("  error: {e}");

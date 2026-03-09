@@ -15,7 +15,7 @@ impl Accounts {
 
     pub fn mint(&mut self, address: Address, amount: Value) -> Value {
         self.0
-            .entry(address.clone())
+            .entry(address)
             .and_modify(|account| account.balance += amount)
             .or_insert(Account {
                 address,
@@ -35,7 +35,7 @@ pub struct Account {
 pub struct Address([u8; 32]);
 
 impl Address {
-    pub fn as_bytes(&self) -> &[u8; 32] {
+    pub const fn as_bytes(&self) -> &[u8; 32] {
         &self.0
     }
 }
