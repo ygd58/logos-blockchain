@@ -503,7 +503,7 @@ fn handle_request(
             input_note_value,
             reply,
         } => {
-            let (signed_tx, new_msg_id) = create_inscribe_tx_with_deposit(
+            let (signed_tx, new_msg_id) = create_deposit_inscribe_tx(
                 channel_id,
                 signing_key,
                 inscription_data,
@@ -819,7 +819,11 @@ fn create_inscribe_tx(
     (signed_tx, msg_id)
 }
 
-fn create_inscribe_tx_with_deposit(
+#[expect(
+    clippy::too_many_arguments,
+    reason = "better to not bundle into structs for clarity"
+)]
+fn create_deposit_inscribe_tx(
     channel_id: ChannelId,
     signing_key: &Ed25519Key,
     inscription: Vec<u8>,
@@ -845,9 +849,8 @@ fn create_inscribe_tx_with_deposit(
     let msg_id = inscribe_op.id();
 
     let change_note = Note::new(
-        // TODO: consider gas fee
         input_note_value
-            .checked_sub(deposit_amount)
+            .checked_sub(deposit_amount) // Zero gas price for now
             .expect("input note should hold enough amount for deposit"),
         input_note_key.to_public_key(),
     );

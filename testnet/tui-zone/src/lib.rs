@@ -109,10 +109,10 @@ pub async fn run(args: InscribeArgs) {
 
     println!();
     println!("Commands:");
-    println!("  /inscribe <message>                                    Publish a text inscription");
-    println!(
-        "  /deposit <amount> <input-note-key> <input-note-id> <recipient-address>  Deposit to channel"
-    );
+    println!("  Publish a text inscription:");
+    println!("    {CMD_USAGE_INSCRIBE}");
+    println!("  Deposit to the channel:");
+    println!("    {CMD_USAGE_DEPOSIT}");
     println!("Press Ctrl-D or type an empty line to exit.");
     println!();
 
@@ -136,97 +136,114 @@ pub async fn run(args: InscribeArgs) {
             break;
         }
 
-        if let Some(msg) = input.strip_prefix("/inscribe ") {
-            if msg.is_empty() {
-                println!("  usage: /inscribe <message>");
-                continue;
-            }
-            match sequencer.publish(msg.as_bytes().to_vec()).await {
-                Ok(result) => {
-                    let tx_hash: [u8; 32] = result.inscription_id.into();
-                    println!("  published: {}", hex::encode(tx_hash));
-                    save_checkpoint(checkpoint_path, &result.checkpoint);
-                }
-                Err(e) => {
-                    println!("  error: {e}");
-                }
-            }
-        } else if let Some(rest) = input.strip_prefix("/deposit ") {
-            // TODO: refactor to avoid duplication with "/inscribe"
-            let parts: Vec<&str> = rest.split_whitespace().collect();
-            if parts.len() != 4 {
-                println!(
-                    "  usage: /deposit <amount> <input-note-key> <input-note-id> <recipient-address>"
-                );
-                continue;
-            }
-            let amount = match parts[0].parse::<u64>() {
-                Ok(v) => v,
-                Err(e) => {
-                    println!("  invalid amount: {e}");
-                    continue;
-                }
-            };
-            let input_note_key = match parse_zk_key(parts[1]) {
-                Ok(key) => key,
-                Err(e) => {
-                    println!("  invalid input-note-key: {e}");
-                    continue;
-                }
-            };
-            let input_note_id = match parse_note_id(parts[2]) {
-                Ok(id) => id,
-                Err(e) => {
-                    println!("  invalid input-note-id: {e}");
-                    continue;
-                }
-            };
-            let recipient_address = match parse_address(parts[3]) {
-                Ok(addr) => addr,
-                Err(e) => {
-                    println!("  invalid recipient-address: {e}");
-                    continue;
-                }
-            };
-
-            let transition = StateTransition::Mint {
-                amount,
-                address: recipient_address,
-            };
-            let inscription_msg =
-                serde_json::to_vec(&transition).expect("failed to serialize state transition");
-            let deposit_metadata = recipient_address.as_bytes().to_vec();
-
-            match sequencer
-                .deposit(
-                    inscription_msg,
-                    amount,
-                    deposit_metadata,
-                    input_note_key,
-                    input_note_id,
-                )
-                .await
-            {
-                Ok(result) => {
-                    let tx_hash: [u8; 32] = result.inscription_id.into();
-                    println!("  depositted: {}", hex::encode(tx_hash));
-                    save_checkpoint(checkpoint_path, &result.checkpoint);
-
-                    state.apply(&transition);
-                    let balance = state
-                        .balance(&recipient_address)
-                        .expect("account must exist");
-                    println!("  minted {amount} tokens for recipient {recipient_address}");
-                    println!("  zone account balance: {balance}");
-                }
-                Err(e) => {
-                    println!("  error: {e}");
-                }
-            }
+        if let Some(msg) = input.strip_prefix(CMD_INSCRIBE) {
+            handle_inscribe_command(msg, &sequencer, checkpoint_path).await;
+        } else if let Some(args) = input.strip_prefix(CMD_DEPOSIT) {
+            handle_deposit_command(args, &sequencer, &mut state, checkpoint_path).await;
         } else {
-            println!("  unknown command. try /inscribe or /deposit");
+            println!("  unknown command");
         }
     }
 
     println!("Goodbye!");
+}
+
+const CMD_INSCRIBE: &str = "/inscribe ";
+const CMD_USAGE_INSCRIBE: &str = "/inscribe <message>";
+
+async fn handle_inscribe_command(msg: &str, sequencer: &ZoneSequencer, checkpoint_path: &Path) {
+    if msg.is_empty() {
+        println!("  usage: {CMD_USAGE_INSCRIBE}");
+        return;
+    }
+    match sequencer.publish(msg.as_bytes().to_vec()).await {
+        Ok(result) => {
+            let tx_hash: [u8; 32] = result.inscription_id.into();
+            println!("  published: {}", hex::encode(tx_hash));
+            save_checkpoint(checkpoint_path, &result.checkpoint);
+        }
+        Err(e) => {
+            println!("  error: {e}");
+        }
+    }
+}
+
+const CMD_DEPOSIT: &str = "/deposit ";
+const CMD_USAGE_DEPOSIT: &str =
+    "/deposit <amount> <input-note-key> <input-note-id> <recipient-addr>";
+
+async fn handle_deposit_command(
+    args: &str,
+    sequencer: &ZoneSequencer,
+    state: &mut State,
+    checkpoint_path: &Path,
+) {
+    let args: Vec<&str> = args.split_whitespace().collect();
+    if args.len() != 4 {
+        println!("  usage: {CMD_USAGE_DEPOSIT}");
+        return;
+    }
+    let amount = match args[0].parse::<u64>() {
+        Ok(v) => v,
+        Err(e) => {
+            println!("  invalid amount: {e}");
+            return;
+        }
+    };
+    let input_note_key = match parse_zk_key(args[1]) {
+        Ok(key) => key,
+        Err(e) => {
+            println!("  invalid input-note-key: {e}");
+            return;
+        }
+    };
+    let input_note_id = match parse_note_id(args[2]) {
+        Ok(id) => id,
+        Err(e) => {
+            println!("  invalid input-note-id: {e}");
+            return;
+        }
+    };
+    let recipient_address = match parse_address(args[3]) {
+        Ok(addr) => addr,
+        Err(e) => {
+            println!("  invalid recipient-address: {e}");
+            return;
+        }
+    };
+
+    let transition = StateTransition::Mint {
+        amount,
+        address: recipient_address,
+    };
+    let inscription_msg =
+        serde_json::to_vec(&transition).expect("failed to serialize state transition");
+    let deposit_metadata = recipient_address.as_bytes().to_vec();
+
+    match sequencer
+        .deposit(
+            inscription_msg,
+            amount,
+            deposit_metadata,
+            input_note_key,
+            input_note_id,
+        )
+        .await
+    {
+        Ok(result) => {
+            let tx_hash: [u8; 32] = result.inscription_id.into();
+            println!("  depositted: {}", hex::encode(tx_hash));
+            save_checkpoint(checkpoint_path, &result.checkpoint);
+
+            state.apply(&transition);
+            let balance = state
+                .balance(&recipient_address)
+                .expect("account must exist");
+            println!("  minted {amount} tokens for recipient {recipient_address}");
+            println!("  zone account balance: {balance}");
+        }
+        Err(e) => {
+            println!("  error: {e}");
+        }
+    }
 }
