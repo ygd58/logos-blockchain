@@ -1,10 +1,17 @@
+mod account;
+
 use std::{fs, io::Write as _, path::Path};
 
 use clap::Parser;
-use lb_core::mantle::ops::channel::ChannelId;
-use lb_key_management_system_service::keys::{ED25519_SECRET_KEY_SIZE, Ed25519Key};
+use lb_core::{
+    codec::DeserializeOp as _,
+    mantle::{NoteId, ops::channel::ChannelId},
+};
+use lb_key_management_system_service::keys::{ED25519_SECRET_KEY_SIZE, Ed25519Key, ZkKey};
 use lb_zone_sdk::sequencer::{SequencerCheckpoint, ZoneSequencer};
 use reqwest::Url;
+
+use crate::account::{Accounts, Address};
 
 #[derive(Parser, Debug)]
 #[command(about = "Terminal UI zone sequencer - publish text inscriptions")]
@@ -20,6 +27,22 @@ pub struct InscribeArgs {
     /// Path to the checkpoint file for crash recovery
     #[arg(long, default_value = "sequencer.checkpoint", env = "CHECKPOINT_PATH")]
     checkpoint_path: String,
+}
+
+fn parse_zk_key(s: &str) -> Result<ZkKey, String> {
+    let bytes = hex::decode(s).map_err(|e| format!("invalid hex: {e}"))?;
+    ZkKey::from_bytes(&bytes).map_err(|e| format!("invalid zk key: {e}"))
+}
+
+fn parse_note_id(s: &str) -> Result<NoteId, String> {
+    let bytes = hex::decode(s).map_err(|e| format!("invalid hex: {e}"))?;
+    NoteId::from_bytes(&bytes).map_err(|e| format!("invalid note id: {e}"))
+}
+
+fn parse_address(s: &str) -> Result<Address, String> {
+    let bytes = hex::decode(s).map_err(|e| format!("invalid hex: {e}"))?;
+    Address::try_from(bytes.as_slice())
+        .map_err(|()| format!("expected 32 bytes, got {}", bytes.len()))
 }
 
 fn save_checkpoint(path: &Path, checkpoint: &SequencerCheckpoint) {
@@ -79,10 +102,15 @@ pub async fn run(args: InscribeArgs) {
         println!("  Restored checkpoint from {}", args.checkpoint_path);
     }
 
-    let sequencer = ZoneSequencer::init(channel_id, signing_key, node_url, None, checkpoint);
+    let sequencer =
+        ZoneSequencer::init(channel_id, signing_key, node_url.clone(), None, checkpoint);
+
+    let mut accounts = Accounts::new(); // TODO: recover from historical inscriptions
 
     println!();
-    println!("Type a message and press Enter to publish it as a zone block.");
+    println!("Commands:");
+    println!("  /inscribe <message>                                    Publish a text inscription");
+    println!("  /deposit <amount> <input-note-id> <recipient-address>  Deposit to channel");
     println!("Press Ctrl-D or type an empty line to exit.");
     println!();
 
@@ -97,25 +125,88 @@ pub async fn run(args: InscribeArgs) {
         let bytes_read = stdin.read_line(&mut line).expect("failed to read line");
 
         if bytes_read == 0 {
-            // EOF
             println!();
             break;
         }
 
-        let msg = line.trim_end();
-        if msg.is_empty() {
+        let input = line.trim_end();
+        if input.is_empty() {
             break;
         }
 
-        match sequencer.publish(msg.as_bytes().to_vec()).await {
-            Ok(result) => {
-                let tx_hash: [u8; 32] = result.inscription_id.into();
-                println!("  published: {}", hex::encode(tx_hash));
-                save_checkpoint(checkpoint_path, &result.checkpoint);
+        if let Some(msg) = input.strip_prefix("/inscribe ") {
+            if msg.is_empty() {
+                println!("  usage: /inscribe <message>");
+                continue;
             }
-            Err(e) => {
-                println!("  error: {e}");
+            match sequencer.publish(msg.as_bytes().to_vec()).await {
+                Ok(result) => {
+                    let tx_hash: [u8; 32] = result.inscription_id.into();
+                    println!("  published: {}", hex::encode(tx_hash));
+                    save_checkpoint(checkpoint_path, &result.checkpoint);
+                }
+                Err(e) => {
+                    println!("  error: {e}");
+                }
             }
+        } else if let Some(rest) = input.strip_prefix("/deposit ") {
+            // TODO: refactor to avoid duplication with "/inscribe"
+            let parts: Vec<&str> = rest.split_whitespace().collect();
+            if parts.len() != 4 {
+                println!(
+                    "  usage: /deposit <amount> <input-note-key> <input-note-id> <recipient-address>"
+                );
+                continue;
+            }
+            let amount = match parts[0].parse::<u64>() {
+                Ok(v) => v,
+                Err(e) => {
+                    println!("  invalid amount: {e}");
+                    continue;
+                }
+            };
+            let input_note_key = match parse_zk_key(parts[1]) {
+                Ok(key) => key,
+                Err(e) => {
+                    println!("  invalid input-note-key: {e}");
+                    continue;
+                }
+            };
+            let input_note_id = match parse_note_id(parts[2]) {
+                Ok(id) => id,
+                Err(e) => {
+                    println!("  invalid input-note-id: {e}");
+                    continue;
+                }
+            };
+            let recipient_address = match parse_address(parts[3]) {
+                Ok(addr) => addr,
+                Err(e) => {
+                    println!("  invalid recipient-address: {e}");
+                    continue;
+                }
+            };
+
+            let msg = format!(
+                "DEPOSIT {amount} to {recipient_address} using note {}",
+                parts[2]
+            )
+            .as_bytes()
+            .to_vec();
+            let deposit_metadata = recipient_address.as_bytes().to_vec();
+            match sequencer
+                .publish_with_deposit(msg, amount, deposit_metadata, input_note_key, input_note_id)
+                .await
+            {
+                Ok(result) => {
+                    let tx_hash: [u8; 32] = result.inscription_id.into();
+                    println!("  published with deposit: {}", hex::encode(tx_hash));
+                    save_checkpoint(checkpoint_path, &result.checkpoint);
+                }
+                Err(_) => todo!(),
+            }
+        } else {
+            println!("  unknown command. try /inscribe or /deposit");
         }
     }
 
