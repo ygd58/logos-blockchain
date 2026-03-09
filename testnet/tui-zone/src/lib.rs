@@ -7,7 +7,9 @@ use lb_core::{
     codec::DeserializeOp as _,
     mantle::{NoteId, ops::channel::ChannelId},
 };
-use lb_key_management_system_service::keys::{ED25519_SECRET_KEY_SIZE, Ed25519Key, ZkKey};
+use lb_key_management_system_service::keys::{
+    ED25519_SECRET_KEY_SIZE, Ed25519Key, ZkKey, ZkPublicKey,
+};
 use lb_zone_sdk::sequencer::{SequencerCheckpoint, ZoneSequencer};
 use reqwest::Url;
 
@@ -32,6 +34,11 @@ pub struct InscribeArgs {
 fn parse_zk_key(s: &str) -> Result<ZkKey, String> {
     let bytes = hex::decode(s).map_err(|e| format!("invalid hex: {e}"))?;
     ZkKey::from_bytes(&bytes).map_err(|e| format!("invalid zk key: {e}"))
+}
+
+fn parse_zk_pk(s: &str) -> Result<ZkPublicKey, String> {
+    let bytes = hex::decode(s).map_err(|e| format!("invalid hex: {e}"))?;
+    ZkPublicKey::from_bytes(&bytes).map_err(|e| format!("invalid zk pk: {e}"))
 }
 
 fn parse_note_id(s: &str) -> Result<NoteId, String> {
@@ -113,6 +120,8 @@ pub async fn run(args: InscribeArgs) {
     println!("    {CMD_USAGE_INSCRIBE}");
     println!("  Deposit to the channel:");
     println!("    {CMD_USAGE_DEPOSIT}");
+    println!("  Withdraw from the channel:");
+    println!("    {CMD_USAGE_WITHDRAW}");
     println!("Press Ctrl-D or type an empty line to exit.");
     println!();
 
@@ -241,6 +250,70 @@ async fn handle_deposit_command(
                 .expect("account must exist");
             println!("  minted {amount} tokens for recipient {recipient_address}");
             println!("  zone account balance: {balance}");
+        }
+        Err(e) => {
+            println!("  error: {e}");
+        }
+    }
+}
+
+const CMD_WITHDRAW: &str = "/withdraw ";
+const CMD_USAGE_WITHDRAW: &str = "/withdraw <amount> <from-address> <output-note-pk>";
+
+async fn handle_withdraw_command(
+    args: &str,
+    sequencer: &ZoneSequencer,
+    state: &mut State,
+    checkpoint_path: &Path,
+) {
+    let args: Vec<&str> = args.split_whitespace().collect();
+    if args.len() != 3 {
+        println!("  usage: {CMD_USAGE_WITHDRAW}");
+        return;
+    }
+    let amount = match args[0].parse::<u64>() {
+        Ok(v) => v,
+        Err(e) => {
+            println!("  invalid amount: {e}");
+            return;
+        }
+    };
+    let from_address = match parse_address(args[1]) {
+        Ok(addr) => addr,
+        Err(e) => {
+            println!("  invalid from-address: {e}");
+            return;
+        }
+    };
+    let output_note_pk_str = args[2];
+    let output_note_pk = match parse_zk_pk(output_note_pk_str) {
+        Ok(key) => key,
+        Err(e) => {
+            println!("  invalid input-note-pk: {e}");
+            return;
+        }
+    };
+
+    let transition = StateTransition::Burn {
+        amount,
+        address: from_address,
+    };
+    let inscription_msg =
+        serde_json::to_vec(&transition).expect("failed to serialize state transition");
+
+    match sequencer
+        .withdraw(inscription_msg, amount, output_note_pk)
+        .await
+    {
+        Ok(result) => {
+            let tx_hash: [u8; 32] = result.inscription_id.into();
+            println!("  withdrew: {}", hex::encode(tx_hash));
+            save_checkpoint(checkpoint_path, &result.checkpoint);
+
+            state.apply(&transition);
+            println!(
+                "  burnt {amount} tokens: withdrew from {from_address} to pk {output_note_pk_str})"
+            );
         }
         Err(e) => {
             println!("  error: {e}");

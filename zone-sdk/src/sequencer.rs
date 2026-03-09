@@ -14,7 +14,7 @@ use lb_core::{
         tx::TxHash,
     },
 };
-use lb_key_management_system_service::keys::{Ed25519Key, ZkKey};
+use lb_key_management_system_service::keys::{Ed25519Key, ZkKey, ZkPublicKey};
 use reqwest::Url;
 use tokio::sync::{mpsc, oneshot};
 use tracing::{debug, info, warn};
@@ -94,6 +94,12 @@ enum ActorRequest {
         input_note_key: ZkKey,
         input_note_id: NoteId,
         input_note_value: Value,
+        reply: oneshot::Sender<Result<(SignedMantleTx, PublishResult), Error>>,
+    },
+    Withdraw {
+        inscription_data: Vec<u8>,
+        amount: u64,
+        output_note_pk: ZkPublicKey,
         reply: oneshot::Sender<Result<(SignedMantleTx, PublishResult), Error>>,
     },
     Status {
@@ -226,6 +232,45 @@ impl ZoneSequencer {
             input_note_key,
             input_note_id,
             input_note_value,
+            reply: reply_tx,
+        };
+
+        self.request_tx
+            .send(request)
+            .await
+            .map_err(|_| Error::Unavailable {
+                reason: "actor channel closed",
+            })?;
+
+        let (signed_tx, result) = reply_rx.await.map_err(|_| Error::Unavailable {
+            reason: "actor dropped reply",
+        })??;
+
+        info!("Created tx with inscription_id:{:?}", result.inscription_id);
+
+        // Post to network (best effort, will be resubmitted if needed)
+        if let Err(e) = self
+            .http_client
+            .post_transaction(self.node_url.clone(), signed_tx)
+            .await
+        {
+            warn!("Failed to post transaction: {e}");
+        }
+
+        Ok(result)
+    }
+
+    pub async fn withdraw(
+        &self,
+        inscription_data: Vec<u8>,
+        amount: u64,
+        output_note_pk: ZkPublicKey,
+    ) -> Result<PublishResult, Error> {
+        let (reply_tx, reply_rx) = oneshot::channel();
+        let request = ActorRequest::Withdraw {
+            inscription_data,
+            amount,
+            output_note_pk,
             reply: reply_tx,
         };
 
@@ -459,7 +504,9 @@ fn handle_request(
 ) {
     let Some(s) = state else {
         match request {
-            ActorRequest::Publish { reply, .. } | ActorRequest::Deposit { reply, .. } => {
+            ActorRequest::Publish { reply, .. }
+            | ActorRequest::Deposit { reply, .. }
+            | ActorRequest::Withdraw { reply, .. } => {
                 drop(reply.send(Err(Error::Unavailable {
                     reason: "not initialized",
                 })));
@@ -513,6 +560,32 @@ fn handle_request(
                 input_note_key,
                 input_note_id,
                 input_note_value,
+            );
+            let id = signed_tx.mantle_tx.hash();
+
+            s.submit(id, signed_tx.clone());
+            *last_msg_id = new_msg_id;
+
+            let checkpoint = build_checkpoint(s, *last_msg_id, lib_slot);
+            let result = PublishResult {
+                inscription_id: id,
+                checkpoint,
+            };
+            drop(reply.send(Ok((signed_tx, result))));
+        }
+        ActorRequest::Withdraw {
+            inscription_data,
+            amount,
+            output_note_pk,
+            reply,
+        } => {
+            let (signed_tx, new_msg_id) = create_withdraw_inscribe_tx(
+                channel_id,
+                signing_key,
+                inscription_data,
+                *last_msg_id,
+                amount,
+                output_note_pk,
             );
             let id = signed_tx.mantle_tx.hash();
 
@@ -871,6 +944,50 @@ fn create_deposit_inscribe_tx(
     let signed_tx = SignedMantleTx {
         ops_proofs: vec![OpProof::NoProof, OpProof::Ed25519Sig(signature)],
         ledger_tx_proof: ZkKey::multi_sign(&[input_note_key], tx_hash.as_ref())
+            .expect("multi-sign with empty key set"),
+        mantle_tx,
+    };
+
+    (signed_tx, msg_id)
+}
+
+fn create_withdraw_inscribe_tx(
+    channel_id: ChannelId,
+    signing_key: &Ed25519Key,
+    inscription: Vec<u8>,
+    parent: MsgId,
+    amount: u64,
+    output_note_pk: ZkPublicKey,
+) -> (SignedMantleTx, MsgId) {
+    let withdraw_op = todo!("WithdrawOp");
+
+    let inscribe_op = InscriptionOp {
+        channel_id,
+        inscription,
+        parent,
+        signer: signing_key.public_key(),
+    };
+    let msg_id = inscribe_op.id();
+
+    // Zero gas price for now
+    let output_note = Note::new(amount, output_note_pk);
+
+    let mantle_tx = MantleTx {
+        ops: vec![
+            todo!("Op::ChannelWithdraw(withdraw_op)"),
+            Op::ChannelInscribe(inscribe_op),
+        ],
+        ledger_tx: LedgerTx::new(vec![], vec![output_note]),
+        storage_gas_price: 0,
+        execution_gas_price: 0,
+    };
+
+    let tx_hash = mantle_tx.hash();
+    let signature = signing_key.sign_payload(tx_hash.as_signing_bytes().as_ref());
+
+    let signed_tx = SignedMantleTx {
+        ops_proofs: vec![OpProof::NoProof, OpProof::Ed25519Sig(signature)],
+        ledger_tx_proof: ZkKey::multi_sign(&[], tx_hash.as_ref())
             .expect("multi-sign with empty key set"),
         mantle_tx,
     };
