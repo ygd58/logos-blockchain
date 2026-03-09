@@ -4885,12 +4885,14 @@ name = "logos-blockchain-tui-zone"
 version = "0.2.1"
 dependencies = [
  "clap",
+ "const-hex",
  "hex",
  "logos-blockchain-core",
  "logos-blockchain-key-management-system-service",
  "logos-blockchain-zone-sdk",
  "rand 0.8.5",
  "reqwest",
+ "serde",
  "serde_json",
  "tokio",
  "tracing-subscriber 0.3.22",
