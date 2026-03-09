@@ -130,13 +130,17 @@ impl WalletState {
     }
 
     #[must_use]
-    pub fn balance(&self, pk: ZkPublicKey) -> Option<Value> {
-        let balance = self
-            .pk_index
-            .get(&pk)?
-            .iter()
-            .map(|id| self.utxos[id].note.value)
-            .sum();
+    pub fn balance(&self, pk: ZkPublicKey) -> Option<Balance> {
+        let mut balance = Balance {
+            balance: 0,
+            notes: HashMap::new(),
+        };
+
+        self.pk_index.get(&pk)?.iter().for_each(|id| {
+            let value = self.utxos[id].note.value;
+            balance.balance += value;
+            balance.notes.insert(*id, value);
+        });
 
         Some(balance)
     }
@@ -259,7 +263,7 @@ where
         Ok(())
     }
 
-    pub fn balance(&self, tip: HeaderId, pk: ZkPublicKey) -> Result<Option<Value>, WalletError> {
+    pub fn balance(&self, tip: HeaderId, pk: ZkPublicKey) -> Result<Option<Balance>, WalletError> {
         Ok(self.wallet_state_at(tip)?.balance(pk))
     }
 
@@ -314,6 +318,12 @@ where
             }
         }
     }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Balance {
+    pub balance: Value,
+    pub notes: HashMap<NoteId, Value>,
 }
 
 #[cfg(test)]
@@ -389,7 +399,10 @@ mod tests {
             genesis,
             &ledger,
         );
-        assert_eq!(wallet.balance(genesis, alice).unwrap(), Some(104));
+        assert_eq!(
+            wallet.balance(genesis, alice).unwrap().unwrap().balance,
+            104
+        );
         assert_eq!(wallet.balance(genesis, bob).unwrap(), None);
         assert_eq!(
             wallet.vouchers().get(&voucher_cm),
@@ -399,7 +412,7 @@ mod tests {
         let wallet =
             Wallet::<_, TestVoucherId>::from_lib([(bob, 2)], Vouchers::default(), genesis, &ledger);
         assert_eq!(wallet.balance(genesis, alice).unwrap(), None);
-        assert_eq!(wallet.balance(genesis, bob).unwrap(), Some(20));
+        assert_eq!(wallet.balance(genesis, bob).unwrap().unwrap().balance, 20);
 
         let wallet = Wallet::<_, TestVoucherId>::from_lib(
             [(alice, 1), (bob, 2)],
@@ -407,8 +420,11 @@ mod tests {
             genesis,
             &ledger,
         );
-        assert_eq!(wallet.balance(genesis, alice).unwrap(), Some(104));
-        assert_eq!(wallet.balance(genesis, bob).unwrap(), Some(20));
+        assert_eq!(
+            wallet.balance(genesis, alice).unwrap().unwrap().balance,
+            104
+        );
+        assert_eq!(wallet.balance(genesis, bob).unwrap().unwrap().balance, 20);
     }
 
     #[test]
@@ -460,11 +476,20 @@ mod tests {
         assert_eq!(wallet.balance(genesis, alice).unwrap(), None);
         assert_eq!(wallet.balance(genesis, bob).unwrap(), None);
 
-        assert_eq!(wallet.balance(block_1.id, alice).unwrap(), Some(104));
+        assert_eq!(
+            wallet.balance(block_1.id, alice).unwrap().unwrap().balance,
+            104
+        );
         assert_eq!(wallet.balance(block_1.id, bob).unwrap(), None);
 
-        assert_eq!(wallet.balance(block_2.id, alice).unwrap(), Some(84));
-        assert_eq!(wallet.balance(block_2.id, bob).unwrap(), Some(20));
+        assert_eq!(
+            wallet.balance(block_2.id, alice).unwrap().unwrap().balance,
+            84
+        );
+        assert_eq!(
+            wallet.balance(block_2.id, bob).unwrap().unwrap().balance,
+            20
+        );
     }
 
     #[test]
