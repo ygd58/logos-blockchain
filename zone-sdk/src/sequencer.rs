@@ -5,11 +5,11 @@ use lb_common_http_client::{BasicAuthCredentials, CommonHttpClient, ProcessedBlo
 use lb_core::{
     header::HeaderId,
     mantle::{
-        MantleTx, SignedMantleTx, Transaction as _,
+        MantleTx, NoteId, SignedMantleTx, Transaction as _,
         ledger::Tx as LedgerTx,
         ops::{
             Op, OpProof,
-            channel::{ChannelId, MsgId, inscribe::InscriptionOp},
+            channel::{ChannelId, MsgId, deposit::DepositOp, inscribe::InscriptionOp},
         },
         tx::TxHash,
     },
@@ -81,6 +81,14 @@ pub enum Error {
 enum ActorRequest {
     Publish {
         data: Vec<u8>,
+        reply: oneshot::Sender<Result<(SignedMantleTx, PublishResult), Error>>,
+    },
+    PublishWithDeposit {
+        inscription_data: Vec<u8>,
+        deposit_amount: u64,
+        deposit_metadata: Vec<u8>,
+        input_note_key: ZkKey,
+        input_note_id: NoteId,
         reply: oneshot::Sender<Result<(SignedMantleTx, PublishResult), Error>>,
     },
     Status {
@@ -175,6 +183,50 @@ impl ZoneSequencer {
         })??;
 
         info!("Created inscription {:?}", result.inscription_id);
+
+        // Post to network (best effort, will be resubmitted if needed)
+        if let Err(e) = self
+            .http_client
+            .post_transaction(self.node_url.clone(), signed_tx)
+            .await
+        {
+            warn!("Failed to post transaction: {e}");
+        }
+
+        Ok(result)
+    }
+
+    // TODO: refactor to remove duplication with `publish`
+    pub async fn publish_with_deposit(
+        &self,
+        inscription_data: Vec<u8>,
+        deposit_amount: u64,
+        deposit_metadata: Vec<u8>,
+        input_note_key: ZkKey,
+        input_note_id: NoteId,
+    ) -> Result<PublishResult, Error> {
+        let (reply_tx, reply_rx) = oneshot::channel();
+        let request = ActorRequest::PublishWithDeposit {
+            inscription_data,
+            deposit_amount,
+            deposit_metadata,
+            input_note_key,
+            input_note_id,
+            reply: reply_tx,
+        };
+
+        self.request_tx
+            .send(request)
+            .await
+            .map_err(|_| Error::Unavailable {
+                reason: "actor channel closed",
+            })?;
+
+        let (signed_tx, result) = reply_rx.await.map_err(|_| Error::Unavailable {
+            reason: "actor dropped reply",
+        })??;
+
+        info!("Created tx with inscription_id:{:?}", result.inscription_id);
 
         // Post to network (best effort, will be resubmitted if needed)
         if let Err(e) = self
@@ -393,7 +445,8 @@ fn handle_request(
 ) {
     let Some(s) = state else {
         match request {
-            ActorRequest::Publish { reply, .. } => {
+            ActorRequest::Publish { reply, .. }
+            | ActorRequest::PublishWithDeposit { reply, .. } => {
                 drop(reply.send(Err(Error::Unavailable {
                     reason: "not initialized",
                 })));
@@ -416,6 +469,36 @@ fn handle_request(
         ActorRequest::Publish { data, reply } => {
             let (signed_tx, new_msg_id) =
                 create_inscribe_tx(channel_id, signing_key, data, *last_msg_id);
+            let id = signed_tx.mantle_tx.hash();
+
+            s.submit(id, signed_tx.clone());
+            *last_msg_id = new_msg_id;
+
+            let checkpoint = build_checkpoint(s, *last_msg_id, lib_slot);
+            let result = PublishResult {
+                inscription_id: id,
+                checkpoint,
+            };
+            drop(reply.send(Ok((signed_tx, result))));
+        }
+        ActorRequest::PublishWithDeposit {
+            inscription_data,
+            deposit_amount,
+            deposit_metadata,
+            input_note_key,
+            input_note_id,
+            reply,
+        } => {
+            let (signed_tx, new_msg_id) = create_inscribe_tx_with_deposit(
+                channel_id,
+                signing_key,
+                inscription_data,
+                *last_msg_id,
+                deposit_amount,
+                deposit_metadata,
+                input_note_key,
+                input_note_id,
+            );
             let id = signed_tx.mantle_tx.hash();
 
             s.submit(id, signed_tx.clone());
@@ -716,6 +799,53 @@ fn create_inscribe_tx(
         ledger_tx_proof: ZkKey::multi_sign(&[], tx_hash.as_ref())
             .expect("multi-sign with empty key set"),
         mantle_tx: inscribe_tx,
+    };
+
+    (signed_tx, msg_id)
+}
+
+fn create_inscribe_tx_with_deposit(
+    channel_id: ChannelId,
+    signing_key: &Ed25519Key,
+    inscription: Vec<u8>,
+    parent: MsgId,
+    deposit_amount: u64,
+    deposit_metadata: Vec<u8>,
+    input_note_key: ZkKey,
+    input_note_id: NoteId,
+) -> (SignedMantleTx, MsgId) {
+    let deposit_op = DepositOp {
+        channel_id,
+        amount: deposit_amount,
+        metadata: deposit_metadata,
+    };
+
+    let inscribe_op = InscriptionOp {
+        channel_id,
+        inscription,
+        parent,
+        signer: signing_key.public_key(),
+    };
+    let msg_id = inscribe_op.id();
+
+    let mantle_tx = MantleTx {
+        ops: vec![
+            Op::ChannelDeposit(deposit_op),
+            Op::ChannelInscribe(inscribe_op),
+        ],
+        ledger_tx: LedgerTx::new(vec![input_note_id], vec![]),
+        storage_gas_price: 0,
+        execution_gas_price: 0,
+    };
+
+    let tx_hash = mantle_tx.hash();
+    let signature = signing_key.sign_payload(tx_hash.as_signing_bytes().as_ref());
+
+    let signed_tx = SignedMantleTx {
+        ops_proofs: vec![OpProof::NoProof, OpProof::Ed25519Sig(signature)],
+        ledger_tx_proof: ZkKey::multi_sign(&[input_note_key], tx_hash.as_ref())
+            .expect("multi-sign with empty key set"),
+        mantle_tx,
     };
 
     (signed_tx, msg_id)

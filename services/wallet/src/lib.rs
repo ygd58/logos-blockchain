@@ -44,7 +44,7 @@ use lb_services_utils::{
 };
 use lb_storage_service::{api::chain::StorageChainApi, backends::StorageBackend};
 use lb_utxotree::MerklePath;
-use lb_wallet::{WalletBlock, WalletError};
+use lb_wallet::{Balance, WalletBlock, WalletError};
 use overwatch::{
     DynError, OpaqueServiceResourcesHandle,
     services::{AsServiceId, ServiceCore, ServiceData},
@@ -111,7 +111,7 @@ pub enum WalletMsg {
     GetBalance {
         tip: Option<HeaderId>,
         pk: ZkPublicKey,
-        resp_tx: Sender<Result<TipResponse<Option<Value>>, WalletServiceError>>,
+        resp_tx: Sender<Result<TipResponse<Option<Balance>>, WalletServiceError>>,
     },
     FundTx {
         tip: Option<HeaderId>,
@@ -482,7 +482,7 @@ where
     async fn handle_get_balance(
         tip: Option<HeaderId>,
         pk: ZkPublicKey,
-        resp_tx: Sender<Result<TipResponse<Option<u64>>, WalletServiceError>>,
+        resp_tx: Sender<Result<TipResponse<Option<Balance>>, WalletServiceError>>,
         wallet: &Wallet,
         cryptarchia: &CryptarchiaServiceApi<Cryptarchia, RuntimeServiceId>,
     ) {
