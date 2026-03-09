@@ -5,7 +5,7 @@ use lb_common_http_client::{BasicAuthCredentials, CommonHttpClient, ProcessedBlo
 use lb_core::{
     header::HeaderId,
     mantle::{
-        MantleTx, NoteId, SignedMantleTx, Transaction as _,
+        MantleTx, Note, NoteId, SignedMantleTx, Transaction as _, Value,
         ledger::Tx as LedgerTx,
         ops::{
             Op, OpProof,
@@ -14,7 +14,7 @@ use lb_core::{
         tx::TxHash,
     },
 };
-use lb_key_management_system_service::keys::{Ed25519Key, ZkKey};
+use lb_key_management_system_service::keys::{Ed25519Key, ZkKey, ZkPublicKey};
 use reqwest::Url;
 use tokio::sync::{mpsc, oneshot};
 use tracing::{debug, info, warn};
@@ -76,6 +76,10 @@ impl Default for SequencerConfig {
 pub enum Error {
     #[error("sequencer unavailable: {reason}")]
     Unavailable { reason: &'static str },
+    #[error("http client error: {0}")]
+    HttpClient(#[from] lb_common_http_client::Error),
+    #[error("note not found from chain: {0:?}")]
+    NoteNotFound(NoteId),
 }
 
 enum ActorRequest {
@@ -89,6 +93,7 @@ enum ActorRequest {
         deposit_metadata: Vec<u8>,
         input_note_key: ZkKey,
         input_note_id: NoteId,
+        input_note_value: Value,
         reply: oneshot::Sender<Result<(SignedMantleTx, PublishResult), Error>>,
     },
     Status {
@@ -205,6 +210,14 @@ impl ZoneSequencer {
         input_note_key: ZkKey,
         input_note_id: NoteId,
     ) -> Result<PublishResult, Error> {
+        let input_note_value = *self
+            .http_client
+            .get_wallet_balance(self.node_url.clone(), input_note_key.to_public_key(), None)
+            .await?
+            .notes
+            .get(&input_note_id)
+            .ok_or(Error::NoteNotFound(input_note_id))?;
+
         let (reply_tx, reply_rx) = oneshot::channel();
         let request = ActorRequest::PublishWithDeposit {
             inscription_data,
@@ -212,6 +225,7 @@ impl ZoneSequencer {
             deposit_metadata,
             input_note_key,
             input_note_id,
+            input_note_value,
             reply: reply_tx,
         };
 
@@ -487,6 +501,7 @@ fn handle_request(
             deposit_metadata,
             input_note_key,
             input_note_id,
+            input_note_value,
             reply,
         } => {
             let (signed_tx, new_msg_id) = create_inscribe_tx_with_deposit(
@@ -498,6 +513,7 @@ fn handle_request(
                 deposit_metadata,
                 input_note_key,
                 input_note_id,
+                input_note_value,
             );
             let id = signed_tx.mantle_tx.hash();
 
@@ -813,6 +829,7 @@ fn create_inscribe_tx_with_deposit(
     deposit_metadata: Vec<u8>,
     input_note_key: ZkKey,
     input_note_id: NoteId,
+    input_note_value: Value,
 ) -> (SignedMantleTx, MsgId) {
     let deposit_op = DepositOp {
         channel_id,
@@ -828,12 +845,20 @@ fn create_inscribe_tx_with_deposit(
     };
     let msg_id = inscribe_op.id();
 
+    let change_note = Note::new(
+        // TODO: consider gas fee
+        input_note_value
+            .checked_sub(deposit_amount)
+            .expect("input note should hold enough amount for deposit"),
+        input_note_key.to_public_key(),
+    );
+
     let mantle_tx = MantleTx {
         ops: vec![
             Op::ChannelDeposit(deposit_op),
             Op::ChannelInscribe(inscribe_op),
         ],
-        ledger_tx: LedgerTx::new(vec![input_note_id], vec![]),
+        ledger_tx: LedgerTx::new(vec![input_note_id], vec![change_note]),
         storage_gas_price: 0,
         execution_gas_price: 0,
     };

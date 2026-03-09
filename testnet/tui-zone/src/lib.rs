@@ -205,7 +205,9 @@ pub async fn run(args: InscribeArgs) {
                     println!("  published with deposit: {}", hex::encode(tx_hash));
                     save_checkpoint(checkpoint_path, &result.checkpoint);
                 }
-                Err(_) => todo!(),
+                Err(e) => {
+                    println!("  error: {e}");
+                }
             }
         } else {
             println!("  unknown command. try /inscribe or /deposit");
