@@ -110,7 +110,9 @@ pub async fn run(args: InscribeArgs) {
     println!();
     println!("Commands:");
     println!("  /inscribe <message>                                    Publish a text inscription");
-    println!("  /deposit <amount> <input-note-id> <recipient-address>  Deposit to channel");
+    println!(
+        "  /deposit <amount> <input-note-key> <input-note-id> <recipient-address>  Deposit to channel"
+    );
     println!("Press Ctrl-D or type an empty line to exit.");
     println!();
 
