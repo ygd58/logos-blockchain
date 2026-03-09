@@ -37,7 +37,7 @@ use crate::{
 };
 
 /// ```rust
-/// 
+///
 /// Fetches the list of known addresses from the `LogosBlockchainNode`.
 ///
 /// # Parameters
@@ -63,7 +63,7 @@ use crate::{
 ///     Err(status) => eprintln!("Failed to fetch addresses: {:?}", status),
 /// }
 /// ```
-/// 
+///
 /// # Notes
 /// - This function utilizes the runtime's `block_on` method to execute the asynchronous operations in a blocking manner.
 /// - The returned public keys represent a set of addresses known to the Wallet API.
@@ -241,13 +241,13 @@ pub unsafe extern "C" fn get_known_addresses(
 ///
 /// if (result.status == OperationStatus_Ok) {
 ///     KnownAddresses addresses = result.value;
-///     
+///
 ///     // Use the addresses...
 ///     for (size_t i = 0; i < addresses.len; i++) {
 ///         uint8_t* address = addresses.addresses[i];
 ///         // Process the 32-byte address...
 ///     }
-///     
+///
 ///     // Free the memory when done
 ///     free_known_addresses(addresses);
 /// }
@@ -299,7 +299,7 @@ pub(crate) fn get_balance_sync(
             .await;
             api.get_balance(Some(tip), wallet_address)
                 .await
-                .map(|tip_response| tip_response.response)
+                .map(|tip_response| tip_response.response.map(|balance| balance.balance))
         })
         .map_err(|_| OperationStatus::DynError)
 }
