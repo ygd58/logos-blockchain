@@ -241,7 +241,7 @@ async fn handle_deposit_command(
     {
         Ok(result) => {
             let tx_hash: [u8; 32] = result.inscription_id.into();
-            println!("  depositted: {}", hex::encode(tx_hash));
+            println!("  deposited: {}", hex::encode(tx_hash));
             save_checkpoint(checkpoint_path, &result.checkpoint);
 
             state.apply(&transition);
