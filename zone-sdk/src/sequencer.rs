@@ -14,7 +14,7 @@ use lb_core::{
         tx::TxHash,
     },
 };
-use lb_key_management_system_service::keys::{Ed25519Key, ZkKey, ZkPublicKey};
+use lb_key_management_system_service::keys::{Ed25519Key, ZkKey};
 use reqwest::Url;
 use tokio::sync::{mpsc, oneshot};
 use tracing::{debug, info, warn};
