@@ -9,6 +9,7 @@ use serde::{Deserialize, Serialize};
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum StateTransition {
     Mint { amount: Value, address: Address },
+    Burn { amount: Value, address: Address },
 }
 
 #[derive(Debug, Clone)]
@@ -28,6 +29,9 @@ impl State {
             StateTransition::Mint { amount, address } => {
                 self.mint(*address, *amount);
             }
+            StateTransition::Burn { amount, address } => {
+                self.burn(*address, *amount);
+            }
         }
     }
 
@@ -37,6 +41,14 @@ impl State {
             .entry(address)
             .and_modify(|balance| balance.add_assign(amount))
             .or_insert(amount)
+    }
+
+    fn burn(&mut self, address: Address, amount: Value) {
+        if let Some(balance) = self.accounts.get_mut(&address) {
+            balance
+                .checked_sub(amount)
+                .expect("can't burn more than balance");
+        }
     }
 
     pub fn balance(&self, address: &Address) -> Option<Value> {
