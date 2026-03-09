@@ -1,4 +1,4 @@
-mod account;
+mod state;
 
 use std::{fs, io::Write as _, path::Path};
 
@@ -11,7 +11,7 @@ use lb_key_management_system_service::keys::{ED25519_SECRET_KEY_SIZE, Ed25519Key
 use lb_zone_sdk::sequencer::{SequencerCheckpoint, ZoneSequencer};
 use reqwest::Url;
 
-use crate::account::{Accounts, Address};
+use crate::state::{Address, State, StateTransition};
 
 #[derive(Parser, Debug)]
 #[command(about = "Terminal UI zone sequencer - publish text inscriptions")]
@@ -105,7 +105,7 @@ pub async fn run(args: InscribeArgs) {
     let sequencer =
         ZoneSequencer::init(channel_id, signing_key, node_url.clone(), None, checkpoint);
 
-    let mut accounts = Accounts::new(); // TODO: recover from historical inscriptions
+    let mut state = State::new(); // TODO: recover from historical inscriptions
 
     println!();
     println!("Commands:");
@@ -189,25 +189,35 @@ pub async fn run(args: InscribeArgs) {
                 }
             };
 
-            let msg = format!(
-                "DEPOSIT {amount} to {recipient_address} using note {}",
-                parts[2]
-            )
-            .as_bytes()
-            .to_vec();
+            let transition = StateTransition::Mint {
+                amount,
+                address: recipient_address,
+            };
+            let inscription_msg =
+                serde_json::to_vec(&transition).expect("failed to serialize state transition");
             let deposit_metadata = recipient_address.as_bytes().to_vec();
+
             match sequencer
-                .publish_with_deposit(msg, amount, deposit_metadata, input_note_key, input_note_id)
+                .deposit(
+                    inscription_msg,
+                    amount,
+                    deposit_metadata,
+                    input_note_key,
+                    input_note_id,
+                )
                 .await
             {
                 Ok(result) => {
                     let tx_hash: [u8; 32] = result.inscription_id.into();
-                    println!("  published with deposit: {}", hex::encode(tx_hash));
+                    println!("  depositted: {}", hex::encode(tx_hash));
                     save_checkpoint(checkpoint_path, &result.checkpoint);
 
-                    let new_balance = accounts.mint(recipient_address, amount);
+                    state.apply(&transition);
+                    let balance = state
+                        .balance(&recipient_address)
+                        .expect("account must exist");
                     println!("  minted {amount} tokens for recipient {recipient_address}");
-                    println!("  zone account balance: {new_balance}");
+                    println!("  zone account balance: {balance}");
                 }
                 Err(e) => {
                     println!("  error: {e}");

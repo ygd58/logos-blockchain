@@ -87,7 +87,7 @@ enum ActorRequest {
         data: Vec<u8>,
         reply: oneshot::Sender<Result<(SignedMantleTx, PublishResult), Error>>,
     },
-    PublishWithDeposit {
+    Deposit {
         inscription_data: Vec<u8>,
         deposit_amount: u64,
         deposit_metadata: Vec<u8>,
@@ -202,7 +202,7 @@ impl ZoneSequencer {
     }
 
     // TODO: refactor to remove duplication with `publish`
-    pub async fn publish_with_deposit(
+    pub async fn deposit(
         &self,
         inscription_data: Vec<u8>,
         deposit_amount: u64,
@@ -219,7 +219,7 @@ impl ZoneSequencer {
             .ok_or(Error::NoteNotFound(input_note_id))?;
 
         let (reply_tx, reply_rx) = oneshot::channel();
-        let request = ActorRequest::PublishWithDeposit {
+        let request = ActorRequest::Deposit {
             inscription_data,
             deposit_amount,
             deposit_metadata,
@@ -459,8 +459,7 @@ fn handle_request(
 ) {
     let Some(s) = state else {
         match request {
-            ActorRequest::Publish { reply, .. }
-            | ActorRequest::PublishWithDeposit { reply, .. } => {
+            ActorRequest::Publish { reply, .. } | ActorRequest::Deposit { reply, .. } => {
                 drop(reply.send(Err(Error::Unavailable {
                     reason: "not initialized",
                 })));
@@ -495,7 +494,7 @@ fn handle_request(
             };
             drop(reply.send(Ok((signed_tx, result))));
         }
-        ActorRequest::PublishWithDeposit {
+        ActorRequest::Deposit {
             inscription_data,
             deposit_amount,
             deposit_metadata,

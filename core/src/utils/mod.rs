@@ -1,6 +1,7 @@
 pub mod merkle;
 pub mod select;
 
+#[macro_export]
 macro_rules! display_hex_bytes_newtype {
     ($newtype:ty) => {
         impl core::fmt::Display for $newtype {
@@ -15,6 +16,7 @@ macro_rules! display_hex_bytes_newtype {
     };
 }
 
+#[macro_export]
 macro_rules! serde_bytes_newtype {
     ($newtype:ty, $len:expr) => {
         impl serde::Serialize for $newtype {
@@ -50,5 +52,5 @@ macro_rules! serde_bytes_newtype {
     };
 }
 
-pub(crate) use display_hex_bytes_newtype;
-pub(crate) use serde_bytes_newtype;
+pub use display_hex_bytes_newtype;
+pub use serde_bytes_newtype;
