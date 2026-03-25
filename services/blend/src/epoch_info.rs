@@ -275,7 +275,13 @@ where
             .chain_service
             .get_epoch_state_for_slot(new_tick.slot)
             .await;
-        tracing::debug!(target: LOG_TARGET, "Retrieved epoch state for unseen epoch: {:?}.", epoch_state);
+
+        tracing::debug!(
+            target: LOG_TARGET,
+            epoch = ?epoch_state.epoch,
+            utxo_count = epoch_state.utxos.size(),
+            "retrieved epoch state for unseen epoch"
+        );
 
         // This is true if epochs are shorter than transition periods. It's not likely
         // to happen in production, but we must still account for this

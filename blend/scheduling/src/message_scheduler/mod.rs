@@ -12,7 +12,7 @@ use futures::{Stream, StreamExt as _};
 use rand::RngCore;
 use tokio::time::interval;
 use tokio_stream::wrappers::IntervalStream;
-use tracing::{info, trace};
+use tracing::trace;
 
 use crate::{
     cover_traffic::SessionCoverTraffic,
@@ -227,7 +227,12 @@ where
                 }
             }
         };
-        info!(target: LOG_TARGET, "Emitting new round info {round_info:?}.");
+        trace!(
+            target: LOG_TARGET,
+            data_messages = round_info.data_messages.len(),
+            release_type = ?round_info.release_type,
+            "emitting new round info"
+        );
         Poll::Ready(Some(round_info))
     }
 }

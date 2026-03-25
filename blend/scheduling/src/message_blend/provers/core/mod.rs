@@ -142,7 +142,7 @@ where
         .quota
         .checked_sub(starting_key_index)
         .expect("Starting key index should never be larger than core quota.");
-    tracing::debug!(target: LOG_TARGET, "Generating {proofs_to_generate} core quota proofs starting from index: {starting_key_index} with public inputs: {public_inputs:?}.");
+    tracing::trace!(target: LOG_TARGET, "Generating {proofs_to_generate} core quota proofs starting from index: {starting_key_index} with public inputs: {public_inputs:?}.");
 
     let quota = public_inputs.core.quota;
     stream::iter(starting_key_index..quota)
@@ -161,7 +161,7 @@ where
 
             async move {
                 if token.is_cancelled() {
-                    tracing::debug!(target: LOG_TARGET, "Core proof generation cancelled before starting.");
+                    tracing::trace!(target: LOG_TARGET, "Core proof generation cancelled before starting.");
                     return None;
                 }
 
@@ -177,7 +177,7 @@ where
                     ).await.expect("Core PoQ generation should not fail.");
 
                 if token.is_cancelled() {
-                    tracing::debug!(target: LOG_TARGET, "Core proof generation cancelled after completion.");
+                    tracing::trace!(target: LOG_TARGET, "Core proof generation cancelled after completion.");
                     return None;
                 }
 
