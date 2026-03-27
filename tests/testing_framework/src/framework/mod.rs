@@ -1,4 +1,9 @@
 mod block_feed;
+mod compose;
+mod constants;
+mod deployment_artifacts;
+mod image;
+mod k8s;
 pub mod local;
 
 use std::{
@@ -39,6 +44,8 @@ pub type ScenarioBuilder = CoreScenarioBuilder<LbcEnv>;
 pub type ScenarioBuilderWith = ScenarioBuilder;
 
 pub type LbcLocalDeployer = ProcessDeployer<LbcEnv>;
+pub type LbcComposeDeployer = testing_framework_runner_compose::ComposeDeployer<LbcEnv>;
+pub type LbcK8sDeployer = testing_framework_runner_k8s::K8sDeployer<LbcEnv>;
 
 pub type LbcManualCluster = ManualCluster<LbcEnv>;
 
@@ -55,7 +62,7 @@ impl Application for LbcEnv {
     type FeedRuntime = BlockFeedRuntime;
 
     fn external_node_client(source: &ExternalNodeSource) -> Result<Self::NodeClient, DynError> {
-        let endpoint = Url::parse(&source.endpoint)?;
+        let endpoint = Url::parse(&source.endpoint())?;
         let basic_auth = external_basic_auth(&endpoint);
 
         Ok(NodeHttpClient::from_urls_with_basic_auth(

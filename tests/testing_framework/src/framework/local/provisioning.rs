@@ -19,7 +19,6 @@ use lb_node::{
 };
 use rand::Rng as _;
 use testing_framework_core::scenario::{Application, DynError, PeerSelection, StartNodeOptions};
-use testing_framework_env as tf_env;
 use testing_framework_runner_local::{
     BinaryConfig, BinaryResolver, BuiltNodeConfig, LaunchEnvVar, LaunchFile, LocalDeployerEnv,
     NodeConfigEntry, NodeEndpointPort, NodeEndpoints, ProcessSpawnError, env::Node,
@@ -28,6 +27,7 @@ use testing_framework_runner_local::{
 use tracing::debug;
 
 use crate::{
+    env as tf_env,
     LOGOS_BLOCKCHAIN_LOG_LEVEL,
     framework::LbcEnv,
     node::{

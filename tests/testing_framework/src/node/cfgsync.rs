@@ -43,7 +43,7 @@ impl CfgsyncEnv for LbcEnv {
         .map_err(Into::into)
     }
 
-    fn rewrite_for_hostnames(
+fn rewrite_for_hostnames(
         deployment: &Self::Deployment,
         node_index: usize,
         hostnames: &[String],
@@ -53,7 +53,7 @@ impl CfgsyncEnv for LbcEnv {
             .map_err(NodeCfgsyncError::from)?;
 
         apply_launch_ready_bind_addresses(config);
-        apply_host_rewritten_networking(config, &hostnames[node_index], rewritten_peers);
+        apply_runtime_networking(config, &hostnames[node_index], rewritten_peers);
 
         Ok(())
     }
@@ -72,6 +72,7 @@ const fn apply_launch_ready_bind_addresses(config: &mut RunConfig) {
         .backend
         .listen_address
         .set_ip(IpAddr::V4(Ipv4Addr::UNSPECIFIED));
+
     config
         .user
         .api
@@ -80,16 +81,21 @@ const fn apply_launch_ready_bind_addresses(config: &mut RunConfig) {
         .set_ip(IpAddr::V4(Ipv4Addr::UNSPECIFIED));
 }
 
-fn apply_host_rewritten_networking(
+fn apply_runtime_networking(
     config: &mut RunConfig,
     hostname: &str,
     rewritten_peers: Vec<Multiaddr>,
 ) {
     let swarm_port = config.user.network.backend.swarm.port;
+    let blend_port = multiaddr_port(&config.user.blend.core.backend.listening_address)
+        .expect("blend listening address should contain a UDP port");
+
     config.user.network.backend.initial_peers = rewritten_peers;
     config.user.network.backend.swarm.nat = NatConfig::Static {
         external_address: compose_peer_addr(hostname, swarm_port, None),
     };
+
+    config.user.blend.core.backend.listening_address = bind_addr(blend_port);
 }
 
 fn rewrite_node_peers(
@@ -149,6 +155,14 @@ fn compose_peer_addr(hostname: &str, port: u16, peer_id: Option<&PeerId>) -> Mul
         addr.push(Protocol::P2p(*peer_id));
     }
 
+    addr
+}
+
+fn bind_addr(port: u16) -> Multiaddr {
+    let mut addr = Multiaddr::empty();
+    addr.push(Protocol::Ip4(Ipv4Addr::UNSPECIFIED));
+    addr.push(Protocol::Udp(port));
+    addr.push(Protocol::QuicV1);
     addr
 }
 
