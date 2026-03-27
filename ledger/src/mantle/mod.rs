@@ -36,6 +36,8 @@ pub enum Error {
     Sdp(#[from] SdpLedgerError),
     #[error("Note not found: {0:?}")]
     NoteNotFound(NoteId),
+    #[error("Applying this transaction would cause a balance overflow")]
+    BalanceOverflow,
 }
 
 /// A state of the mantle ledger
@@ -184,7 +186,9 @@ impl LedgerState {
                 (Op::ChannelDeposit(op), Some(OpProof::NoProof)) => {
                     self.channels = self.channels.deposit(op)
                         .inspect_err(|err| error!(target: LOG_TARGET, %err, "Failed to apply the Channel Deposit message."))?;
-                    balance -= Balance::from(op.amount);
+                    balance = balance
+                        .checked_sub(Balance::from(op.amount))
+                        .ok_or(Error::BalanceOverflow)?;
                 }
                 (
                     Op::SDPDeclare(op),
@@ -224,7 +228,9 @@ impl LedgerState {
                     // before calling this function.
                     let leader_balance;
                     (self.leaders, leader_balance) = self.leaders.claim(op).inspect_err(|err| error!(target: LOG_TARGET, %err, "failed to apply leader claim message"))?;
-                    balance += leader_balance;
+                    balance = balance
+                        .checked_add(leader_balance)
+                        .ok_or(Error::BalanceOverflow)?;
                 }
                 _ => {
                     return Err(Error::UnsupportedOp);
@@ -242,7 +248,9 @@ mod tests {
         MantleTx, SignedMantleTx, Transaction as _,
         gas::MainnetGasConstants,
         ledger::Tx as LedgerTx,
-        ops::channel::{ChannelId, MsgId, inscribe::InscriptionOp, set_keys::SetKeysOp},
+        ops::channel::{
+            ChannelId, MsgId, deposit::DepositOp, inscribe::InscriptionOp, set_keys::SetKeysOp,
+        },
     };
     use lb_key_management_system_keys::keys::{Ed25519Key, Ed25519PublicKey, ZkKey};
 
@@ -259,11 +267,14 @@ mod tests {
         (signing_key, verifying_key)
     }
 
-    fn create_signed_tx(op: Op, signing_key: &Ed25519Key) -> SignedMantleTx {
+    fn create_signed_tx(op: Op, signing_key: Option<&Ed25519Key>) -> SignedMantleTx {
         create_multi_signed_tx(vec![op], vec![signing_key])
     }
 
-    fn create_multi_signed_tx(ops: Vec<Op>, signing_keys: Vec<&Ed25519Key>) -> SignedMantleTx {
+    fn create_multi_signed_tx(
+        ops: Vec<Op>,
+        signing_keys: Vec<Option<&Ed25519Key>>,
+    ) -> SignedMantleTx {
         let ledger_tx = LedgerTx::new(vec![], vec![]);
         let mantle_tx = MantleTx {
             ops: ops.clone(),
@@ -277,7 +288,9 @@ mod tests {
             .into_iter()
             .zip(ops)
             .map(|(key, _)| {
-                OpProof::Ed25519Sig(key.sign_payload(tx_hash.as_signing_bytes().as_ref()))
+                key.map_or(OpProof::NoProof, |key| {
+                    OpProof::Ed25519Sig(key.sign_payload(tx_hash.as_signing_bytes().as_ref()))
+                })
             })
             .collect();
 
@@ -285,6 +298,33 @@ mod tests {
 
         SignedMantleTx::new(mantle_tx, ops_proofs, ledger_tx_proof)
             .expect("Test transaction should have valid signatures")
+    }
+
+    fn create_channel(
+        ledger_state: LedgerState,
+        cryptarchia_state: &crate::cryptarchia::LedgerState,
+        config: &Config,
+        id: ChannelId,
+        signing_key: &Ed25519Key,
+        verifying_key: Ed25519PublicKey,
+    ) -> LedgerState {
+        ledger_state
+            .try_apply_tx::<MainnetGasConstants>(
+                0,
+                config,
+                cryptarchia_state.latest_utxos(),
+                create_signed_tx(
+                    Op::ChannelInscribe(InscriptionOp {
+                        channel_id: id,
+                        inscription: vec![1, 2, 3, 4],
+                        parent: MsgId::root(),
+                        signer: verifying_key,
+                    }),
+                    Some(signing_key),
+                ),
+            )
+            .unwrap()
+            .0
     }
 
     #[test]
@@ -302,7 +342,7 @@ mod tests {
             signer: verifying_key,
         };
 
-        let tx = create_signed_tx(Op::ChannelInscribe(inscribe_op), &signing_key);
+        let tx = create_signed_tx(Op::ChannelInscribe(inscribe_op), Some(&signing_key));
         let result = ledger_state.try_apply_tx::<MainnetGasConstants>(
             0,
             &test_config,
@@ -328,7 +368,7 @@ mod tests {
             keys: vec![verifying_key],
         };
 
-        let tx = create_signed_tx(Op::ChannelSetKeys(set_keys_op), &signing_key);
+        let tx = create_signed_tx(Op::ChannelSetKeys(set_keys_op), Some(&signing_key));
         let result = ledger_state.try_apply_tx::<MainnetGasConstants>(
             0,
             &test_config,
@@ -343,6 +383,50 @@ mod tests {
             new_state.channels.channels.get(&channel_id).unwrap().keys,
             vec![verifying_key].into()
         );
+    }
+
+    #[test]
+    fn test_channel_deposit_operation() {
+        let cryptarchia_state = genesis_state(&[utxo()]);
+        let test_config = config();
+        let mut ledger_state = LedgerState::new(&test_config, cryptarchia_state.epoch_state());
+        let (signing_key, verifying_key) = create_test_keys();
+        let channel_id = ChannelId::from([4; 32]);
+
+        // First, create a channel by submitting an inscription
+        ledger_state = create_channel(
+            ledger_state,
+            &cryptarchia_state,
+            &test_config,
+            channel_id,
+            &signing_key,
+            verifying_key,
+        );
+        assert!(ledger_state.channels.channels.contains_key(&channel_id));
+
+        // Submit a deposit operation
+        let deposit_op = DepositOp {
+            channel_id,
+            amount: 100,
+            metadata: vec![5, 6, 7, 8],
+        };
+        let result = ledger_state.try_apply_tx::<MainnetGasConstants>(
+            0,
+            &test_config,
+            cryptarchia_state.latest_utxos(),
+            create_signed_tx(Op::ChannelDeposit(deposit_op), None),
+        );
+        let (new_state, balance) = result.unwrap();
+        assert_eq!(
+            new_state
+                .channels
+                .channels
+                .get(&channel_id)
+                .unwrap()
+                .balance,
+            100
+        );
+        assert_eq!(balance, Balance::from(-100));
     }
 
     #[test]
@@ -361,7 +445,7 @@ mod tests {
             signer: verifying_key,
         };
 
-        let first_tx = create_signed_tx(Op::ChannelInscribe(first_inscribe), &signing_key);
+        let first_tx = create_signed_tx(Op::ChannelInscribe(first_inscribe), Some(&signing_key));
         ledger_state = ledger_state
             .try_apply_tx::<MainnetGasConstants>(
                 0,
@@ -381,7 +465,7 @@ mod tests {
             signer: verifying_key,
         };
 
-        let second_tx = create_signed_tx(Op::ChannelInscribe(second_inscribe), &signing_key);
+        let second_tx = create_signed_tx(Op::ChannelInscribe(second_inscribe), Some(&signing_key));
         let result = ledger_state.clone().try_apply_tx::<MainnetGasConstants>(
             0,
             &test_config,
@@ -402,7 +486,7 @@ mod tests {
             signer: verifying_key,
         };
 
-        let empty_tx = create_signed_tx(Op::ChannelInscribe(empty_inscribe), &signing_key);
+        let empty_tx = create_signed_tx(Op::ChannelInscribe(empty_inscribe), Some(&signing_key));
         let empty_result = ledger_state.try_apply_tx::<MainnetGasConstants>(
             0,
             &test_config,
@@ -433,7 +517,7 @@ mod tests {
         };
 
         let correct_parent = first_inscribe.id();
-        let first_tx = create_signed_tx(Op::ChannelInscribe(first_inscribe), &signing_key);
+        let first_tx = create_signed_tx(Op::ChannelInscribe(first_inscribe), Some(&signing_key));
         ledger_state = ledger_state
             .try_apply_tx::<MainnetGasConstants>(
                 0,
@@ -454,7 +538,7 @@ mod tests {
 
         let second_tx = create_signed_tx(
             Op::ChannelInscribe(second_inscribe),
-            &unauthorized_signing_key,
+            Some(&unauthorized_signing_key),
         );
         let result = ledger_state.try_apply_tx::<MainnetGasConstants>(
             0,
@@ -481,7 +565,7 @@ mod tests {
             keys: vec![],
         };
 
-        let tx = create_signed_tx(Op::ChannelSetKeys(set_keys_op), &signing_key);
+        let tx = create_signed_tx(Op::ChannelSetKeys(set_keys_op), Some(&signing_key));
         let result = ledger_state.try_apply_tx::<MainnetGasConstants>(
             0,
             &test_config,
@@ -543,7 +627,7 @@ mod tests {
             Op::ChannelSetKeys(set_keys_op),
             Op::ChannelInscribe(inscribe_op3.clone()),
         ];
-        let tx = create_multi_signed_tx(ops, vec![&sk1, &sk2, &sk1, &sk4]);
+        let tx = create_multi_signed_tx(ops, vec![Some(&sk1), Some(&sk2), Some(&sk1), Some(&sk4)]);
 
         let result = ledger_state
             .try_apply_tx::<MainnetGasConstants>(
